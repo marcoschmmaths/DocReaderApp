@@ -1,8 +1,8 @@
 import sys
 from PySide6.QtWidgets import QApplication
-from model import DocumentModel
-from view import MainView
-from controller import Controller
+from .model import DocumentModel
+from .view import MainView
+from .controller import Controller
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
