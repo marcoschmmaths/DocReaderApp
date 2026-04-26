@@ -25,7 +25,8 @@ class DocumentModel:
         self.annotations = {}  # Using a dict to store annotations per file
 
     def _init_database(self):
-        """Inicializa la base de datos SQLite y crea la tabla si no existe."""
+            
+        """Inicializa la base de datos SQLite y actualiza el esquema si es necesario."""
         self.conn = sqlite3.connect(self.db_path)
         self.cursor = self.conn.cursor()
         self.cursor.execute("""
@@ -33,9 +34,19 @@ class DocumentModel:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 file_name TEXT,
                 page INTEGER,
-                text TEXT
+                text TEXT,
+                x REAL,
+                y REAL
             )
         """)
+        # Migración para versiones anteriores que no tenían x, y
+        self.cursor.execute("PRAGMA table_info(annotations)")
+        columns = [col[1] for col in self.cursor.fetchall()]
+        if 'x' not in columns:
+            self.cursor.execute("ALTER TABLE annotations ADD COLUMN x REAL")
+        if 'y' not in columns:
+            self.cursor.execute("ALTER TABLE annotations ADD COLUMN y REAL")
+
 
         """
         CODIGO PARA VER LA ESTRUCTURA Y CONTENIDO DE LA DB EN CONSOLA
@@ -124,22 +135,23 @@ class DocumentModel:
             self.doc = None
             return False
     def _load_annotations(self, file_name):
-        """Carga anotaciones desde la DB para el documento actual."""
-
         if not self.current_file_path:
             return
         file_name = os.path.basename(self.current_file_path)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT page, text FROM annotations 
-            WHERE file_name = ? 
-            ORDER BY page
+            SELECT id, page, text, x, y FROM annotations
+            WHERE file_name = ?
+            ORDER BY page, id
         """, (file_name,))
         rows = cursor.fetchall()
         conn.close()
 
-        self.annotations[file_name] = [{"page": page, "text": text} for page, text in rows]
+        self.annotations[file_name] = [
+            {"id": row[0], "page": row[1], "text": row[2], "x": row[3], "y": row[4]}
+            for row in rows
+        ]
         print(f"Cargadas {len(self.annotations[file_name])} anotaciones para {file_name}")
             
     def get_current_page_as_pixmap(self, zoom_factor=2.0):
@@ -180,34 +192,41 @@ class DocumentModel:
             return True
         return False
 
-    def add_annotation(self, text):
-        """Adds an annotation for the current page of the current file and saves to DB."""
+    def add_annotation(self, text, x=None, y=None):
+        """Añade una anotación para la página actual, opcionalmente con coordenadas."""
         if not self.current_file_path:
             return False
-        
+
         filename = os.path.basename(self.current_file_path)
         page = self.current_page_num
-        
+
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO annotations (file_name, page, text) 
-                VALUES (?, ?, ?)
-            """, (filename, page, text))
+                INSERT INTO annotations (file_name, page, text, x, y)
+                VALUES (?, ?, ?, ?, ?)
+            """, (filename, page, text, x, y))
+            ann_id = cursor.lastrowid
             conn.commit()
             conn.close()
-            
-            # Actualizar cache local
-            self.annotations[filename].append({"page": page, "text": text})
-            print(f"Anotación agregada y guardada en DB para {filename} en página {page}: {text}")
+
+            # Actualizar caché local
+            self.annotations[filename].append({
+                "id": ann_id,
+                "page": page,
+                "text": text,
+                "x": x,
+                "y": y
+            })
+            print(f"Anotación {ann_id} guardada en {filename} pág {page} x={x} y={y}")
             return True
         except Exception as e:
             print(f"Error guardando anotación: {e}")
             return False
-
+    """
     def get_annotations_for_current_page(self):
-        """Retrieves all annotations for the current file and page."""
+        #
         if not self.current_file_path:
             return []
             
@@ -225,5 +244,26 @@ class DocumentModel:
                 print('an exception was made, ann = ',ann )
         
         return current_annotations
+    """
+    def get_annotations_for_current_page(self):
+        """Devuelve las anotaciones de la página actual con sus coordenadas."""
+        if not self.current_file_path:
+            return []
 
+        file_name = os.path.basename(self.current_file_path)
+        self._load_annotations(file_name)
+
+        page = self.current_page_num
+        return [ann for ann in self.annotations.get(file_name, []) if ann["page"] == page]
+    
+    def get_annotation_by_id(self, ann_id):
+        """Recupera una anotación por su ID."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, file_name, page, text, x, y FROM annotations WHERE id = ?", (ann_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {"id": row[0], "file_name": row[1], "page": row[2], "text": row[3], "x": row[4], "y": row[5]}
+        return None
 
